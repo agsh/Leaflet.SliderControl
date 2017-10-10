@@ -1,0 +1,380 @@
+'use strict';
+
+/* global L, document, $, Popup */
+
+(function(L, document, $, Popup) {
+	/**
+	 * Кол-во дней между датами
+	 * @param {Date} first
+	 * @param {Date} second
+	 * @return {number}
+	 */
+	function daysBetween(first, second) {
+		return Math.abs(Math.floor((first - second) / (1000 * 60 * 60 * 24)));
+	}
+
+	L.Control.SliderControlv2 = L.Control.extend({
+		options: {
+			position: 'topright',  // позиция на карте
+			map: null,        // ссылка на объект карты
+			layer: null,        // слой
+			idContainer: null,        // id для контейнера контрола
+			dateStart: null,        // дата начала (начальная точка) для слайдера, 2а формата tempus объект или new Date()
+			dateEnd: null,        // дата конца (конечная точка) для слайдера, 2а формата tempus объект или new Date()
+			DefaultStartDate: null,        // начальное положение ползунка, рекомендованный формат строка, 2а формата tempus объект или new Date()
+			DefaultEndDate: null,        // конечное положение ползунка, рекомендованный формат строка, 2а формата tempus объект или new Date()
+			range: false,       // диапазон или единичный
+			eventOnSlide: null,        // cb на шаг слайда
+			iconClass: null,        // дополнительный класс для иконки слайдера
+			filter: [],          // массив фильтров TODO доделать
+			values: []          // массив значений для слайдера из установленных значений, 2а формата tempus объект или new Date()
+		},
+
+		current: null, // текущее значение даты или дат
+
+		initialize: function(options) {
+			L.Util.setOptions(this, options);
+			this._layer = this.options.layer;
+			if (!this._isReqOptions()) {
+				throw new Error('не указан период дат для слайдера', options.idContainer);
+			}
+		},
+		_isReqOptions: function() {
+			return !!this.options.dateStart || !!this.options.dateEnd;
+		},
+
+		WorkWithDate: function() {
+			var options = this.options;
+			// first
+			options.DefaultStartDate = options.DefaultStartDate ? options.DefaultStartDate : options.dateStart;
+			options.DefaultEndDate = options.DefaultEndDate ? options.DefaultEndDate : options.dateEnd;
+			// second
+			options.dateStartNumb = 1;
+			options.dateEndNumb = this.convertDateToNumber(options.dateEnd);
+			options.DefaultStartDateNumb = this.convertDateToNumber(options.DefaultStartDate);
+			options.DefaultEndDateNumb = this.convertDateToNumber(options.DefaultEndDate);
+		},
+		convertDateToNumber: function(date) {
+			return daysBetween(date, this.options.dateStart);
+		},
+		convertNumberToDate: function(number) {
+			return new Date(+this.options.dateStart + (number * 1000 * 60 * 60 * 24));
+		},
+		changePosition: function(position) {
+			var map = this._map;
+
+			if (map) {
+				map.removeControl(this);
+			}
+
+			this.options.position = position;
+
+			if (map) {
+				map.addControl(this);
+			}
+			this.startSlider();
+			return this;
+		},
+
+		onAdd: function(map) {
+
+			this.options.map = map;
+			this.WorkWithDate();
+
+			var options = this.options,
+				self = this;
+
+			var sliderContainer = L.DomUtil.create('div', 'leaflet-timeline-slider-container');
+			sliderContainer.id = 'leaflet-slider' + this.options.idContainer;
+			options.sliderContainer = sliderContainer;
+			L.DomEvent
+				.addListener(sliderContainer, 'click', L.DomEvent.stopPropagation)
+				.addListener(sliderContainer, 'click', L.DomEvent.preventDefault)
+				.addListener(sliderContainer, 'dblclick', L.DomEvent.stopPropagation)
+				.addListener(sliderContainer, 'dblclick', L.DomEvent.preventDefault)
+				.addListener(sliderContainer, 'mousedown', L.DomEvent.stopPropagation)
+				.addListener(sliderContainer, 'mousedown', L.DomEvent.preventDefault)
+			;
+
+
+			//Prevent map panning/zooming while using the slider
+			$(sliderContainer).mousedown(function() {
+				map.dragging.disable();
+			});
+			$(document).mouseup(function() {
+				map.dragging.enable();
+				//Hide the slider timestamp if not range and option alwaysShowDate is set on false
+				if (self.options.range || !self.options.alwaysShowDate) {
+					$('#slider-timestamp').html('');
+				}
+			});
+
+			return sliderContainer;
+		},
+		onRemove: function() {
+			$('#leaflet-slider' + this.options.idContainer).remove();
+		},
+
+		startSlider: function() {
+			var options = this.options
+				, sliderContainer = options.sliderContainer
+				, self = this;
+
+			var views = {
+				hint: $('<input id="slider-timestamp-' + options.idContainer + '" class="leaflet-timeline-time oePeriod">'),
+				icon: null,
+				timelineWrapper: $('<div class="leaflet-timeline-slider slider__timeline-wrap"></div>'),
+				slider: $('<div id="leaflet-slider-' + options.idContainer + '"><div class="ui-slider-handle"></div></div>'),
+				datePicIcon: $('<span class="oePeriodImg trigger slider__date-pic-icon"></span>'),
+				formIcon: function() {
+					if (!options.icon) {
+						return $('<i class="slider__icon slider__icon-default"></i>');
+					} else {
+						return $('<i class="slider__icon ' + options.iconClass + '"></i>');
+					}
+				},
+				init: function() {
+					this.icon = this.formIcon();
+					$(sliderContainer)
+						.append(this.timelineWrapper)
+						.append(this.hint);
+					this.timelineWrapper
+						.append(this.icon)
+						.append(this.slider);
+
+					return this;
+				},
+				addScripts: function() {
+					var datePickOptions = {
+						showOnFocus: false
+						, rangeSelect: !!options.range
+						, monthsToShow: 2
+						, alignment: 'top'
+						, pickerClass: 'custom'
+						, showAnim: 'fadeIn'
+						, showTrigger: this.datePicIcon
+						, minDate: options.dateStart._d
+						, maxDate: options.dateEnd._d
+						, onClose: function(dates) {
+							options.eventOnSlide(dates, dates);
+							if (options.range) {
+								$("#leaflet-slider-" + options.idContainer)
+									.slider('values', [self.convertDateToNumber(dates[0]), self.convertDateToNumber(dates[1])]);
+							} else {
+								$("#leaflet-slider-" + options.idContainer)
+									.slider('value', self.convertDateToNumber(dates[0]));
+							}
+						}.bind(this)
+					};
+					this.slider.slider(this.formSliderObj());
+					this.hint.datepick(datePickOptions);
+					if (options.range) {
+						this.hint.datepick('setDate', options.dateStart, options.dateEnd);
+					} else {
+						this.hint.datepick('setDate', options.dateStart);
+					}
+					options.views = views;
+				},
+				formSliderObj: function() {
+					var formObj = {
+						animate: 'fast',
+						range: options.range,
+						min: options.dateStartNumb,
+						max: options.dateEndNumb,
+						step: 1,
+						slide: function(e, ui) {
+							// вызов события
+							if (options.eventOnSlide) {
+								if (options.range) {
+									self.current = [
+										self.convertNumberToDate(ui.values[0]),
+										self.convertNumberToDate(ui.values[1])
+									];
+									options.eventOnSlide(e, self.current);
+								} else {
+									self.current = self.convertNumberToDate(ui.value);
+									options.eventOnSlide(e, self.current);
+								}
+							}
+							// изменение значения datepicker'а
+							if (!ui.values) {
+								var date = $.datepick.formatDate('dd.mm.yyyy', self.convertNumberToDate(ui.value));
+								options.views.hint.datepicker().val(date);
+								/*костыль старого datepicker*/
+							} else {
+								options.views.hint.datepicker()
+									.val($.datepick.formatDate('dd.mm.yyyy', self.convertNumberToDate(ui.values[0])) + ' - ' + $.datepick.formatDate('dd.mm.yyyy', self.convertNumberToDate(ui.values[1])));
+								/*костыль старого datepicker*/
+							}
+
+						}
+					};
+					if (options.range) {
+						formObj.values = [options.DefaultStartDateNumb, options.DefaultEndDateNumb];
+					} else {
+						formObj.value = options.DefaultStartDateNumb;
+					}
+					return formObj;
+				}
+			};
+
+			views.init().addScripts();
+		},
+		startSliderByValues: function() {
+			var options = this.options
+				, sliderContainer = options.sliderContainer
+				, self = this;
+			var views = {
+				icon: null,
+				timelineWrapper: $('<div class="leaflet-timeline-slider slider__timeline-wrap"></div>'),
+				slider: $('<div id="leaflet-slider-' + options.idContainer + '"><div class="ui-slider-handle"></div></div>'),
+				init: function() {
+					this.icon = this.formIcon();
+					$(sliderContainer)
+						.append(this.timelineWrapper)
+						.append(this.hint);
+					this.timelineWrapper
+						.append(this.icon)
+						.append(this.slider);
+					return this;
+				},
+				formIcon: function() {
+					if (!options.icon) {
+						return $('<i class="slider__icon slider__icon-default"></i>');
+					} else {
+						return $('<i class="slider__icon ' + options.iconClass + '"></i>');
+					}
+				},
+				formSlider: function() {
+					this.formValuesToSlider();
+					this.formPopup();
+					this.formSerifs();
+					return this;
+				},
+				formValuesToSlider: function() {
+					var arrayOfNumbers = []
+						;
+
+					if (!options.values.length) { throw  new Error('Не были переданы значения для слайдера.'); }
+
+					self.arrOfValues = options.values = options.values
+						/*.map(function(stringDate) {
+							return new Date(stringDate);
+						})*/
+						.map(function(value, index, arr) {
+							if (!index) {
+								arrayOfNumbers[index] = index;
+								return value;
+							}
+							arrayOfNumbers.push(daysBetween(arr[0], value));
+							return value;
+						})
+						.map(function(value, index) {
+							if (!index) {
+								return {
+									value: value,
+									dayNumber: arrayOfNumbers[index],
+									percent: index
+								};
+							}
+							return {
+								value: value,
+								dayNumber: arrayOfNumbers[index],
+								percent: Math.floor((arrayOfNumbers[index] * 100) / arrayOfNumbers[arrayOfNumbers.length - 1])
+							};
+						});
+					console.log('options.values', options.values);
+				},
+				formPopup: function() {
+					var props = {
+							event: 'hover',
+							wrapper: {
+								className: 'popup__hint-slider'
+							},
+							header: {
+								className: 'popup__hint-slider-header'
+							},
+							body: {
+								className: 'popup__hint-body'
+							},
+							footer: {
+								className: 'popup__hint-footer'
+							}
+						},
+						popup = new Popup(this.slider.find('div.ui-slider-handle'), props),
+						tmpObj = {
+							header: $.datepick.formatDate('yyyy-mm-dd', options.values[0].value)
+						};
+					popup.putContent(tmpObj).formDOM();
+					options.popup = popup;
+				},
+				formSerifs: function() {
+					var self = this;
+					options.values.forEach(function(value) {
+						self.slider.append('<div class="slider__serif" style="left:calc(' + value.percent + '% - 1px)"></div>');
+					});
+				},
+				addScripts: function() {
+					this.slider.slider(this.formSliderObj(options));
+					options.views = views;
+				},
+				formSliderObj: function(options) {
+					var self = this;
+					var formObj = {
+						animate: 'fast',
+						range: options.range,
+						min: 0,
+						max: 100,
+						step: 1,
+						slide: function(e, ui) {
+							var values = _.cloneDeep(options.values);
+							var currentValue = values.find(function(value) {
+								return (value.percent + 2 >= ui.value) && (value.percent - 2 <= ui.value);
+							});
+
+							if (!currentValue) {
+								return false;
+							}
+							return self.eventOnSlide(e, ui, options, currentValue);
+						}
+					};
+					return formObj;
+				},
+				eventOnSlide: function(e, ui, options, currentValue) {
+					var tmpObj, uiChanged;
+					if (!('previousValue' in options)) {
+						options.previousValue = currentValue.percent;
+						return fixProblemWithInfelicity();
+					} else {
+						if (options.previousValue == currentValue.percent) {
+							return fixProblemWithInfelicity();
+						} else {
+							uiChanged = {
+								value: currentValue.percent,
+								values: options.values
+							};
+							tmpObj = {
+								header: $.datepick.formatDate('yyyy-mm-dd', currentValue.value)
+							};
+
+							options.popup.clearDOM().putContent(tmpObj).formDOM();
+							if (options.eventOnSlide) {
+								options.eventOnSlide(e, currentValue);
+							}
+
+							options.previousValue = currentValue.percent;
+							return fixProblemWithInfelicity();
+						}
+					}
+
+					function fixProblemWithInfelicity() {
+						$(ui.handle).css('left', currentValue.percent + '%');
+						return false;
+					}
+				}
+			};
+
+			views.init().formSlider().addScripts();
+		}
+	});
+})(L, document, $, Popup);
